@@ -42,7 +42,7 @@ class QuestionUI:
 
 
 # -------------------- Regex / limpieza --------------------
-R_SOLUTION = re.compile(r"^\s*Soluci[oó]n\s*:\s*([a-dA-D])\s*$", re.IGNORECASE)
+R_SOLUTION = re.compile(r"^\s*Soluci[oó]n\s*:\s*([a-dA-D])\s*[\)\.]?\s*$", re.IGNORECASE)
 R_OPT_LABELED = re.compile(r"^\s*([a-dA-D])\s*[\)\.]\s*(.+?)\s*$")  # a) / a.
 R_NOISE = re.compile(r"^\s*C2\s*[\-–]\s*Uso\s*Restringido\s*$", re.IGNORECASE)
 R_QNUM = re.compile(r"^\s*\d{1,4}\s*[\.\)\-:]\s*")  # "16." / "1)" / "23 -"
@@ -215,6 +215,16 @@ with st.sidebar:
     shuffle_opts = st.checkbox("Barajar opciones", value=True)
     start = st.button("🎲 Preparar examen")
 
+if "uploaded_docx_bytes" not in st.session_state:
+    st.session_state.uploaded_docx_bytes = None
+if "uploaded_docx_name" not in st.session_state:
+    st.session_state.uploaded_docx_name = None
+
+# cada rerun, si hay archivo:
+if up is not None and st.session_state.uploaded_docx_name != up.name:
+    st.session_state.uploaded_docx_bytes = up.getvalue()
+    st.session_state.uploaded_docx_name = up.name
+
 # estado
 if "bank" not in st.session_state: st.session_state.bank = []
 if "quiz" not in st.session_state: st.session_state.quiz = []
@@ -227,7 +237,9 @@ if "session_wrong_map" not in st.session_state: st.session_state.session_wrong_m
 
 def load_docx_bytes() -> Optional[bytes]:
     if up is not None:
-        return up.read()
+        # getvalue() NO consume el stream (ideal para reruns, especialmente en móvil)
+        b = up.getvalue()
+        return b if b else None
     if path_txt:
         try:
             with open(path_txt, "rb") as f:
