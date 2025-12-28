@@ -222,8 +222,7 @@ if "uploaded_docx_name" not in st.session_state:
 
 # cada rerun, si hay archivo:
 if up is not None and st.session_state.uploaded_docx_name != up.name:
-    st.session_state.uploaded_docx_bytes = up.getvalue()
-    st.session_state.uploaded_docx_name = up.name
+    st.session_state.session_wrong_map = {}
 
 # estado
 if "bank" not in st.session_state: st.session_state.bank = []
@@ -250,22 +249,14 @@ def load_docx_bytes() -> Optional[bytes]:
 
 
 if start:
-    if not DOCX_OK:
-        st.error("Falta dependencia: python-docx. Instala con: pip install python-docx")
+    data = st.session_state.uploaded_docx_bytes  # <-- AQUÍ va
+    if not data:
+        st.error("Sube un DOCX antes de preparar el examen.")
     else:
-        data = load_docx_bytes()
-        if not data:
-            st.error("Sube un DOCX o indica una ruta válida.")
+        bank = parse_docx_questions(data)
+        if not bank:
+            st.error("No se detectaron preguntas. Verifica que existan líneas tipo 'Solución: a/b/c/d'.")
         else:
-            try:
-                bank = parse_docx_questions(data)
-            except Exception as e:
-                st.error(f"Error al parsear el DOCX: {e}")
-                bank = []
-
-            if not bank:
-                st.error("No se detectaron preguntas. Verifica que existan líneas tipo 'Solución: a/b/c/d'.")
-            else:
                 st.session_state.bank = bank
                 st.session_state.session_wrong_map = {}
 
