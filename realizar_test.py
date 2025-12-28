@@ -1,9 +1,15 @@
 # realizar_test.py
 # -----------------------------------------------------------
-# Quiz desde DOCX  - opción única
-# - Radio buttons A–D SIN opción "Sin responder"
-# - Inicio sin ninguna marcada (index=None si tu Streamlit lo soporta)
-# - Repasar fallos (intento) y fallos acumulados (sesión)
+# App Streamlit (móvil-friendly) para hacer tests desde un DOCX:
+# - El usuario SUBE el DOCX (desde móvil/PC)
+# - Detecta preguntas con 4 opciones (A–D) y "Solución: a/b/c/d"
+# - Soporta 2 formatos dentro de cada bloque:
+#   1) Con letras:  a) ... b) ... c) ... d) ...  (o a. b. c. d.)
+#   2) Sin letras: 4 líneas de opciones antes de "Solución: x"
+# - Permite elegir nº de preguntas (máx 100)
+# - Radio buttons SIN opción "sin responder" y sin selección inicial
+# - Corrige, puntúa
+# - Repasar fallos del intento y fallos acumulados en la sesión
 # -----------------------------------------------------------
 
 import io
@@ -17,19 +23,19 @@ import streamlit as st
 
 try:
     import docx  # python-docx
-    DOCX_OK = True
 except Exception as e:
-    DOCX_OK = False
-    DOCX_ERR = e
+    docx = None
+    DOCX_IMPORT_ERR = e
+
 
 LETTERS = "ABCD"
 
-
+# -------------------- Modelos --------------------
 @dataclass
 class Question:
     qid: str
     text: str
-    options: List[str]  # A..D
+    options: List[str]  # 4 opciones
     correct: int        # 0..3
 
 
@@ -42,10 +48,14 @@ class QuestionUI:
 
 
 # -------------------- Regex / limpieza --------------------
+# Solución tolerante: "Solución: c" / "Solución: c." / "Solución: c)" / etc.
 R_SOLUTION = re.compile(r"^\s*Soluci[oó]n\s*:\s*([a-dA-D])\s*[\)\.]?\s*$", re.IGNORECASE)
-R_OPT_LABELED = re.compile(r"^\s*([a-dA-D])\s*[\)\.]\s*(.+?)\s*$")  # a) / a.
+# Opción etiquetada: "a) ..." / "a. ..." / "A) ..." / "B. ..."
+R_OPT_LABELED = re.compile(r"^\s*([a-dA-D])\s*[\)\.]\s*(.+?)\s*$")
+# Ruido típico
 R_NOISE = re.compile(r"^\s*C2\s*[\-–]\s*Uso\s*Restringido\s*$", re.IGNORECASE)
-R_QNUM = re.compile(r"^\s*\d{1,4}\s*[\.\)\-:]\s*")  # "16." / "1)" / "23 -"
+# Numeración de pregunta al inicio
+R_QNUM = re.compile(r"^\s*\d{1,4}\s*[\.\)\-:]\s*")
 
 
 def clean_line(s: str) -> str:
@@ -64,20 +74,27 @@ def is_noise(s: str) -> bool:
     return False
 
 
-def qkey(q: Question) -> str:
-    base = re.sub(r"\s+", " ", q.text.strip().lower())
-    opts = "||".join([re.sub(r"\s+", " ", o.strip().lower()) for o in q.options])
+def qkey_from_text(text: str, options: List[str]) -> str:
+    base = re.sub(r"\s+", " ", text.strip().lower())
+    opts = "||".join(re.sub(r"\s+", " ", o.strip().lower()) for o in options)
     return hashlib.sha1((base + "##" + opts).encode("utf-8")).hexdigest()
 
 
 # -------------------- Parser DOCX --------------------
 def parse_docx_questions(doc_bytes: bytes) -> List[Question]:
-    if not DOCX_OK:
-        raise RuntimeError(f"Falta python-docx: {DOCX_ERR}")
+    """
+    Cierra bloques por 'Solución: x'.
+    Dentro de cada bloque:
+      - Si detecta a)/a. ... b)/b. ... c)/c. ... d)/d. -> usa etiquetado
+      - Si no, toma las últimas 4 líneas como opciones
+    """
+    if docx is None:
+        raise RuntimeError(f"Falta python-docx. Error importando: {DOCX_IMPORT_ERR}")
 
     d = docx.Document(io.BytesIO(doc_bytes))
     raw_lines = [clean_line(p.text) for p in d.paragraphs]
 
+    # filtra ruido y compacta vacíos repetidos
     lines: List[str] = []
     for ln in raw_lines:
         if is_noise(ln):
@@ -99,7 +116,7 @@ def parse_docx_questions(doc_bytes: bytes) -> List[Question]:
         if len(content) < 5:
             return
 
-        # --- Intento 1: opciones etiquetadas a)/a. ---
+        # --- Intento 1: opciones etiquetadas ---
         labeled: Dict[str, str] = {}
         current_opt: Optional[str] = None
         stem_parts: List[str] = []
@@ -130,7 +147,7 @@ def parse_docx_questions(doc_bytes: bytes) -> List[Question]:
                     questions.append(Question(str(q_counter), text, opts, idx))
                 return
 
-        # --- Intento 2: formato sin letras ---
+        # --- Intento 2: sin letras (últimas 4 líneas) ---
         opts2 = [o.strip() for o in content[-4:]]
         stem2 = content[:-4]
         text2 = " ".join(stem2).strip()
@@ -156,9 +173,10 @@ def parse_docx_questions(doc_bytes: bytes) -> List[Question]:
         else:
             chunk.append(ln)
 
+    # deduplicado suave por enunciado+opciones
     uniq: Dict[str, Question] = {}
     for q in questions:
-        uniq[qkey(q)] = q
+        uniq[qkey_from_text(q.text, q.options)] = q
     return list(uniq.values())
 
 
@@ -166,6 +184,7 @@ def parse_docx_questions(doc_bytes: bytes) -> List[Question]:
 def build_quiz(bank: List[Question], n: int, seed: Optional[int], shuffle_options: bool):
     rng = random.Random(seed) if seed is not None else random
     sample = rng.sample(bank, k=min(n, len(bank), 100))
+
     ui_items: List[QuestionUI] = []
     for q in sample:
         if shuffle_options:
@@ -180,9 +199,9 @@ def build_quiz(bank: List[Question], n: int, seed: Optional[int], shuffle_option
 
 
 def score(quiz: List[Question], ui: List[QuestionUI]) -> Tuple[int, int, List[int]]:
-    wrong_idx = []
     ok = 0
-    for k, (q, u) in enumerate(zip(quiz, ui)):
+    wrong_idx: List[int] = []
+    for k, u in enumerate(ui):
         if u.user is not None and u.user == u.correct:
             ok += 1
         else:
@@ -195,146 +214,22 @@ def reset_attempt_state():
     st.session_state.done = False
 
 
+def qkey(q: Question) -> str:
+    return qkey_from_text(q.text, q.options)
+
+
 def add_wrongs_to_session(quiz: List[Question], ui: List[QuestionUI]):
     _, _, wrong_idx = score(quiz, ui)
     for k in wrong_idx:
-        q = quiz[k]
-        st.session_state.session_wrong_map[qkey(q)] = q
+        st.session_state.session_wrong_map[qkey(quiz[k])] = quiz[k]
 
 
-# -------------------- Streamlit UI --------------------
-st.set_page_config(page_title="CREADOR DE TEST sobre 4 opciones (DOCX)", page_icon="📝", layout="wide")
-st.title("📝 Test de preguntas con 4 opciones (1 única respuesta válida) ")
-
-with st.sidebar:
-    up = st.file_uploader("Sube el DOCX", type=["docx"])
-    path_txt = st.text_input("…o ruta local (opcional)", placeholder="C:\\ruta\\Test con respuestas para programa.docx")
-    num_q = st.number_input("Número de preguntas", 1, 100, 50, step=1)
-    use_seed = st.checkbox("Fijar semilla", value=False)
-    seed = st.number_input("Semilla", 0, 10_000_000, 0, step=1, disabled=not use_seed)
-    shuffle_opts = st.checkbox("Barajar opciones", value=True)
-    start = st.button("🎲 Preparar examen")
-
-if "uploaded_docx_bytes" not in st.session_state:
-    st.session_state.uploaded_docx_bytes = None
-if "uploaded_docx_name" not in st.session_state:
-    st.session_state.uploaded_docx_name = None
-
-# cada rerun, si hay archivo:
-if up is not None and st.session_state.uploaded_docx_name != up.name:
-    st.session_state.session_wrong_map = {}
-
-# estado
-if "bank" not in st.session_state: st.session_state.bank = []
-if "quiz" not in st.session_state: st.session_state.quiz = []
-if "ui" not in st.session_state:   st.session_state.ui = []
-if "i" not in st.session_state:    st.session_state.i = 0
-if "done" not in st.session_state: st.session_state.done = False
-if "mode" not in st.session_state: st.session_state.mode = "normal"  # normal | review_attempt | review_session
-if "session_wrong_map" not in st.session_state: st.session_state.session_wrong_map = {}  # key->Question
-
-
-def load_docx_bytes() -> Optional[bytes]:
-    if up is not None:
-        # getvalue() NO consume el stream (ideal para reruns, especialmente en móvil)
-        b = up.getvalue()
-        return b if b else None
-    if path_txt:
-        try:
-            with open(path_txt, "rb") as f:
-                return f.read()
-        except Exception as e:
-            st.error(f"No se pudo leer el DOCX: {e}")
-    return None
-
-
-if start:
-    data = st.session_state.uploaded_docx_bytes  # <-- AQUÍ va
-    if not data:
-        st.error("Sube un DOCX antes de preparar el examen.")
-    else:
-        bank = parse_docx_questions(data)
-        if not bank:
-            st.error("No se detectaron preguntas. Verifica que existan líneas tipo 'Solución: a/b/c/d'.")
-        else:
-                st.session_state.bank = bank
-                st.session_state.session_wrong_map = {}
-
-                seed_val = int(seed) if use_seed else None
-                quiz, ui = build_quiz(bank, int(num_q), seed_val, shuffle_opts)
-                st.session_state.quiz = quiz
-                st.session_state.ui = ui
-                st.session_state.mode = "normal"
-                reset_attempt_state()
-                st.success(f"Banco: {len(bank)} preguntas • Examen: {len(quiz)}.")
-
-
-quiz: List[Question] = st.session_state.quiz
-ui: List[QuestionUI] = st.session_state.ui
-i: int = st.session_state.i
-
-
-def render_question(i: int):
-    q = quiz[i]
-    u = ui[i]
-
-    if st.session_state.mode == "review_attempt":
-        title = "Repaso de fallos (este intento)"
-    elif st.session_state.mode == "review_session":
-        title = "Repaso de fallos (sesión)"
-    else:
-        title = "Examen"
-
-    st.subheader(f"{title} — Pregunta {i+1} de {len(quiz)}")
-    st.write(q.text)
-    st.write("")
-
-    # Radio A–D SIN opción extra.
-    # Queremos que empiece sin ninguna marcada: index=None (Streamlit reciente).
-    opts = [f"{LETTERS[j]}. {u.options[j]}" for j in range(4)]
-
-    radio_key = f"radio_{st.session_state.mode}_{i}"
-
-    # Valor actual (si ya había elegido)
-    # Si no, lo dejamos sin seleccionar (index=None).
-    if u.user is None:
-        chosen = st.radio("Selecciona la respuesta:", options=opts, index=None, key=radio_key)
-    else:
-        chosen = st.radio("Selecciona la respuesta:", options=opts, index=u.user, key=radio_key)
-
-    # Mapear selección a índice
-    if chosen is None:
-        u.user = None
-    else:
-        u.user = opts.index(chosen)
-
-    c1, c2, c3, _ = st.columns([1, 1, 1, 5])
-    if c1.button("✅ Corregir", key=f"rev_{st.session_state.mode}_{i}"):
-        u.revealed = True
-    if c2.button("⬅️ Anterior", disabled=(i == 0), key=f"prev_{st.session_state.mode}_{i}"):
-        st.session_state.i = max(0, i - 1)
-        st.rerun()
-    if c3.button("Siguiente ➡️", disabled=(i == len(quiz) - 1), key=f"next_{st.session_state.mode}_{i}"):
-        st.session_state.i = min(len(quiz) - 1, i + 1)
-        st.rerun()
-
-    if u.revealed:
-        if u.user is None:
-            st.warning("No has seleccionado respuesta.")
-        elif u.user == u.correct:
-            st.success(f"✅ Correcta ({LETTERS[u.correct]})")
-        else:
-            st.error(f"❌ Incorrecta. Correcta: {LETTERS[u.correct]}")
-
-    st.markdown("---")
-
-
-def start_review_from_questions(questions: List[Question], mode_name: str):
+def start_review_from_questions(questions: List[Question], mode_name: str,
+                                n: int, seed: Optional[int], shuffle_opts: bool):
     if not questions:
         st.info("No hay preguntas para repasar 🙂")
         return
-    seed_val = int(seed) if use_seed else None
-    review_quiz, review_ui = build_quiz(questions, min(100, len(questions)), seed_val, shuffle_opts)
+    review_quiz, review_ui = build_quiz(questions, min(100, len(questions), n), seed, shuffle_opts)
     st.session_state.quiz = review_quiz
     st.session_state.ui = review_ui
     st.session_state.mode = mode_name
@@ -342,13 +237,8 @@ def start_review_from_questions(questions: List[Question], mode_name: str):
     st.rerun()
 
 
-def restart_normal_exam():
-    bank = st.session_state.bank or []
-    if not bank:
-        st.warning("Carga el DOCX primero.")
-        return
-    seed_val = int(seed) if use_seed else None
-    new_quiz, new_ui = build_quiz(bank, int(num_q), seed_val, shuffle_opts)
+def restart_normal_exam(bank: List[Question], n: int, seed: Optional[int], shuffle_opts: bool):
+    new_quiz, new_ui = build_quiz(bank, n, seed, shuffle_opts)
     st.session_state.quiz = new_quiz
     st.session_state.ui = new_ui
     st.session_state.mode = "normal"
@@ -356,56 +246,162 @@ def restart_normal_exam():
     st.rerun()
 
 
-def clear_session_wrongs():
-    st.session_state.session_wrong_map = {}
-    st.success("Fallos de la sesión limpiados.")
+# -------------------- UI --------------------
+st.set_page_config(page_title="Test FNMT (DOCX)", page_icon="📝", layout="centered")
+st.title("📝 Test desde DOCX (FNMT / ASTIC)")
+st.caption("Sube tu DOCX, elige nº de preguntas y practica. Funciona bien en móvil.")
 
+with st.sidebar:
+    st.subheader("Configuración")
+    up = st.file_uploader("Sube el DOCX", type=["docx"])
+    num_q = st.number_input("Número de preguntas", 1, 100, 50, step=1)
+    use_seed = st.checkbox("Fijar semilla", value=False)
+    seed = st.number_input("Semilla", 0, 10_000_000, 0, step=1, disabled=not use_seed)
+    shuffle_opts = st.checkbox("Barajar opciones", value=True)
+    start = st.button("🎲 Preparar examen")
 
-if quiz:
-    render_question(i)
+# --------- Estado ---------
+if "bank" not in st.session_state: st.session_state.bank = []
+if "quiz" not in st.session_state: st.session_state.quiz = []
+if "ui" not in st.session_state: st.session_state.ui = []
+if "i" not in st.session_state: st.session_state.i = 0
+if "done" not in st.session_state: st.session_state.done = False
+if "mode" not in st.session_state: st.session_state.mode = "normal"  # normal | review_attempt | review_session
+if "session_wrong_map" not in st.session_state: st.session_state.session_wrong_map = {}
 
-    ok, tot, wrong_idx = score(quiz, ui)
-    session_wrong_count = len(st.session_state.session_wrong_map)
+# Persistencia del DOCX (CRÍTICO para móvil / reruns)
+if "uploaded_docx_bytes" not in st.session_state:
+    st.session_state.uploaded_docx_bytes = None
+if "uploaded_docx_name" not in st.session_state:
+    st.session_state.uploaded_docx_name = None
 
-    st.write(
-        f"Aciertos actuales: **{ok}/{tot}** • "
-        f"Fallos (este intento): **{len(wrong_idx)}** • "
-        f"Fallos acumulados (sesión): **{session_wrong_count}**"
-    )
+# Guardar bytes cuando se sube o cambia el archivo
+if up is not None:
+    if (st.session_state.uploaded_docx_name != up.name) or (st.session_state.uploaded_docx_bytes is None):
+        st.session_state.uploaded_docx_bytes = up.getvalue()
+        st.session_state.uploaded_docx_name = up.name
+        st.session_state.session_wrong_map = {}  # evita mezclar fallos entre docs
+        st.session_state.bank = []               # fuerza recarga de banco con el nuevo doc
+        st.session_state.quiz = []
+        st.session_state.ui = []
+        reset_attempt_state()
 
-    colA, colB, colC, colD = st.columns([1, 1, 1, 2])
+    # útil para verificar que en móvil realmente se leyó
+    st.sidebar.caption(f"Archivo: {up.name} • {len(st.session_state.uploaded_docx_bytes)/1024:.1f} KB")
 
-    if colA.button("🏁 Finalizar", key=f"finish_{st.session_state.mode}", disabled=st.session_state.done):
-        st.session_state.done = True
-        st.rerun()
+# --------- Preparar examen ---------
+if start:
+    data = st.session_state.uploaded_docx_bytes
+    if not data:
+        st.error("Sube un DOCX antes de preparar el examen.")
+    else:
+        bank = parse_docx_questions(data)
+        if not bank:
+            st.error("No se detectaron preguntas. Verifica que existan líneas tipo 'Solución: a/b/c/d'.")
+        else:
+            st.session_state.bank = bank
+            seed_val = int(seed) if use_seed else None
+            quiz, ui_items = build_quiz(bank, int(num_q), seed_val, shuffle_opts)
+            st.session_state.quiz = quiz
+            st.session_state.ui = ui_items
+            st.session_state.mode = "normal"
+            reset_attempt_state()
+            st.success(f"Banco: {len(bank)} preguntas • Examen: {len(quiz)}.")
+            st.rerun()
 
-    if st.session_state.done:
-        add_wrongs_to_session(quiz, ui)
+# --------- Render ---------
+bank: List[Question] = st.session_state.bank
+quiz: List[Question] = st.session_state.quiz
+ui_items: List[QuestionUI] = st.session_state.ui
+i: int = st.session_state.i
 
-        ok, tot, wrong_idx = score(quiz, ui)
-        pct = (ok / tot * 100) if tot else 0.0
-        st.subheader("Resultados")
-        st.write(f"Puntuación: **{ok}/{tot}** ({pct:.1f}%)")
-        st.write(f"Fallos (este intento): **{len(wrong_idx)}**")
-        st.write(f"Fallos acumulados (sesión): **{len(st.session_state.session_wrong_map)}**")
+if not quiz:
+    st.info("Sube un DOCX y pulsa **Preparar examen**.")
+    st.stop()
 
-        if len(wrong_idx) > 0:
-            if colB.button("📚 Repasar fallos (este intento)", key="review_attempt"):
-                wrong_questions = [quiz[k] for k in wrong_idx]
-                start_review_from_questions(wrong_questions, "review_attempt")
-
-        if len(st.session_state.session_wrong_map) > 0:
-            if colC.button("🧠 Repasar fallos (sesión)", key="review_session"):
-                qs = list(st.session_state.session_wrong_map.values())
-                start_review_from_questions(qs, "review_session")
-
-        if colD.button("🔄 Nuevo examen (del banco)", key="restart_normal"):
-            restart_normal_exam()
-
-        if st.button("🧹 Limpiar fallos de la sesión"):
-            clear_session_wrongs()
-
+# Título de modo
+if st.session_state.mode == "review_attempt":
+    title = "Repaso de fallos (este intento)"
+elif st.session_state.mode == "review_session":
+    title = "Repaso de fallos (sesión)"
 else:
-    st.info("Sube el DOCX, configura el examen y pulsa **Preparar examen**.")
-    if not DOCX_OK:
-        st.warning("Instala python-docx: pip install python-docx")
+    title = "Examen"
+
+q = quiz[i]
+u = ui_items[i]
+
+st.subheader(f"{title} — Pregunta {i+1} de {len(quiz)}")
+st.write(q.text)
+st.write("")
+
+# Radio A–D sin opción extra y sin selección inicial
+opts = [f"{LETTERS[j]}. {u.options[j]}" for j in range(4)]
+radio_key = f"radio_{st.session_state.mode}_{i}"
+
+chosen = st.radio(
+    "Selecciona la respuesta:",
+    options=opts,
+    index=None if u.user is None else u.user,
+    key=radio_key
+)
+u.user = None if chosen is None else opts.index(chosen)
+
+c1, c2, c3 = st.columns(3)
+if c1.button("✅ Corregir", key=f"rev_{st.session_state.mode}_{i}"):
+    u.revealed = True
+if c2.button("⬅️ Anterior", disabled=(i == 0), key=f"prev_{st.session_state.mode}_{i}"):
+    st.session_state.i = max(0, i - 1)
+    st.rerun()
+if c3.button("Siguiente ➡️", disabled=(i == len(quiz) - 1), key=f"next_{st.session_state.mode}_{i}"):
+    st.session_state.i = min(len(quiz) - 1, i + 1)
+    st.rerun()
+
+if u.revealed:
+    if u.user is None:
+        st.warning("No has seleccionado respuesta.")
+    elif u.user == u.correct:
+        st.success(f"✅ Correcta ({LETTERS[u.correct]})")
+    else:
+        st.error(f"❌ Incorrecta. Correcta: {LETTERS[u.correct]}")
+
+st.divider()
+
+ok, tot, wrong_idx = score(quiz, ui_items)
+st.write(
+    f"Aciertos: **{ok}/{tot}** · "
+    f"Fallos (intento): **{len(wrong_idx)}** · "
+    f"Fallos (sesión): **{len(st.session_state.session_wrong_map)}**"
+)
+
+if st.button("🏁 Finalizar", disabled=st.session_state.done):
+    st.session_state.done = True
+    st.rerun()
+
+if st.session_state.done:
+    add_wrongs_to_session(quiz, ui_items)
+    ok, tot, wrong_idx = score(quiz, ui_items)
+    pct = (ok / tot * 100) if tot else 0.0
+
+    st.subheader("Resultados")
+    st.write(f"Puntuación: **{ok}/{tot}** ({pct:.1f}%)")
+    st.write(f"Fallos (este intento): **{len(wrong_idx)}**")
+    st.write(f"Fallos acumulados (sesión): **{len(st.session_state.session_wrong_map)}**")
+
+    seed_val = int(seed) if use_seed else None
+
+    col1, col2, col3 = st.columns(3)
+
+    if len(wrong_idx) > 0 and col1.button("📚 Repasar fallos (intento)"):
+        start_review_from_questions([quiz[k] for k in wrong_idx], "review_attempt",
+                                    int(num_q), seed_val, shuffle_opts)
+
+    if len(st.session_state.session_wrong_map) > 0 and col2.button("🧠 Repasar fallos (sesión)"):
+        start_review_from_questions(list(st.session_state.session_wrong_map.values()), "review_session",
+                                    int(num_q), seed_val, shuffle_opts)
+
+    if col3.button("🔄 Nuevo examen"):
+        restart_normal_exam(st.session_state.bank, int(num_q), seed_val, shuffle_opts)
+
+    if st.button("🧹 Limpiar fallos de la sesión"):
+        st.session_state.session_wrong_map = {}
+        st.success("Fallos de sesión borrados.")
