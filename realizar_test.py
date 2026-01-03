@@ -249,7 +249,7 @@ def restart_normal_exam(bank: List[Question], n: int, seed: Optional[int], shuff
 # -------------------- UI --------------------
 st.set_page_config(page_title="Test (DOCX)", page_icon="📝", layout="centered")
 st.title("📝 Test desde DOCX ")
-st.caption("Sube tu DOCX, elige nº de preguntas y practica. Funciona bien en móvil.")
+st.caption("por Miguel Ángel Gómez Ortiz")
 
 with st.sidebar:
     st.subheader("Configuración")
