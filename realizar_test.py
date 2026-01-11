@@ -198,15 +198,30 @@ def build_quiz(bank: List[Question], n: int, seed: Optional[int], shuffle_option
     return sample, ui_items
 
 
-def score(quiz: List[Question], ui: List[QuestionUI]) -> Tuple[int, int, List[int]]:
+def score(quiz: List[Question], ui: List[QuestionUI]) -> Tuple[int, int, int, List[int]]:
+    """
+    Devuelve:
+      ok: aciertos (respondidas y correctas)
+      wrong: fallos (respondidas e incorrectas)   <-- NO incluye sin responder
+      unanswered: sin responder
+      wrong_idx: índices de preguntas falladas (solo las respondidas mal)
+    """
     ok = 0
+    wrong = 0
+    unanswered = 0
     wrong_idx: List[int] = []
+
     for k, u in enumerate(ui):
-        if u.user is not None and u.user == u.correct:
+        if u.user is None:
+            unanswered += 1
+        elif u.user == u.correct:
             ok += 1
         else:
+            wrong += 1
             wrong_idx.append(k)
-    return ok, len(quiz), wrong_idx
+
+    return ok, wrong, unanswered, wrong_idx
+
 
 
 def reset_attempt_state():
@@ -366,10 +381,13 @@ if u.revealed:
 
 st.divider()
 
-ok, tot, wrong_idx = score(quiz, ui_items)
+ok, wrong, unanswered, wrong_idx = score(quiz, ui_items)
+tot = len(quiz)
+
 st.write(
     f"Aciertos: **{ok}/{tot}** · "
-    f"Fallos (intento): **{len(wrong_idx)}** · "
+    f"Fallos (intento): **{wrong}** · "
+    f"Sin responder: **{unanswered}** · "
     f"Fallos (sesión): **{len(st.session_state.session_wrong_map)}**"
 )
 
@@ -379,21 +397,23 @@ if st.button("🏁 Finalizar", disabled=st.session_state.done):
 
 if st.session_state.done:
     add_wrongs_to_session(quiz, ui_items)
-    ok, tot, wrong_idx = score(quiz, ui_items)
+    ok, wrong, unanswered, wrong_idx = score(quiz, ui_items)
+    tot = len(quiz)
     pct = (ok / tot * 100) if tot else 0.0
 
     st.subheader("Resultados")
     st.write(f"Puntuación: **{ok}/{tot}** ({pct:.1f}%)")
     st.write(f"Fallos (este intento): **{len(wrong_idx)}**")
+    st.write(f"Sin responder: **{unanswered}**")
     st.write(f"Fallos acumulados (sesión): **{len(st.session_state.session_wrong_map)}**")
 
     seed_val = int(seed) if use_seed else None
 
     col1, col2, col3 = st.columns(3)
 
-    if len(wrong_idx) > 0 and col1.button("📚 Repasar fallos (intento)"):
+    if wrong > 0 and col1.button("📚 Repasar fallos (intento)"):
         start_review_from_questions([quiz[k] for k in wrong_idx], "review_attempt",
-                                    int(num_q), seed_val, shuffle_opts)
+                                int(num_q), seed_val, shuffle_opts)
 
     if len(st.session_state.session_wrong_map) > 0 and col2.button("🧠 Repasar fallos (sesión)"):
         start_review_from_questions(list(st.session_state.session_wrong_map.values()), "review_session",
