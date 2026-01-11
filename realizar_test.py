@@ -223,7 +223,6 @@ def score(quiz: List[Question], ui: List[QuestionUI]) -> Tuple[int, int, int, Li
     return ok, wrong, unanswered, wrong_idx
 
 
-
 def reset_attempt_state():
     st.session_state.i = 0
     st.session_state.done = False
@@ -234,7 +233,7 @@ def qkey(q: Question) -> str:
 
 
 def add_wrongs_to_session(quiz: List[Question], ui: List[QuestionUI]):
-    _, _, wrong_idx = score(quiz, ui)
+    _, _, _, wrong_idx = score(quiz, ui)  # solo respondidas mal
     for k in wrong_idx:
         st.session_state.session_wrong_map[qkey(quiz[k])] = quiz[k]
 
