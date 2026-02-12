@@ -6,7 +6,7 @@
 # - Soporta 2 formatos dentro de cada bloque:
 #   1) Con letras:  a) ... b) ... c) ... d) ...  (o a. b. c. d.)
 #   2) Sin letras: 4 líneas de opciones antes de "Solución: x"
-# - Permite elegir nº de preguntas (máx 100)
+# - Permite elegir nº de preguntas (máx 200)
 # - Radio buttons SIN opción "sin responder" y sin selección inicial
 # - Corrige, puntúa
 # - Repasar fallos del intento y fallos acumulados en la sesión
@@ -183,7 +183,7 @@ def parse_docx_questions(doc_bytes: bytes) -> List[Question]:
 # -------------------- Quiz helpers --------------------
 def build_quiz(bank: List[Question], n: int, seed: Optional[int], shuffle_options: bool):
     rng = random.Random(seed) if seed is not None else random
-    sample = rng.sample(bank, k=min(n, len(bank), 100))
+    sample = rng.sample(bank, k=min(n, len(bank), 200))
 
     ui_items: List[QuestionUI] = []
     for q in sample:
@@ -243,7 +243,7 @@ def start_review_from_questions(questions: List[Question], mode_name: str,
     if not questions:
         st.info("No hay preguntas para repasar 🙂")
         return
-    review_quiz, review_ui = build_quiz(questions, min(100, len(questions), n), seed, shuffle_opts)
+    review_quiz, review_ui = build_quiz(questions, min(200, len(questions), n), seed, shuffle_opts)
     st.session_state.quiz = review_quiz
     st.session_state.ui = review_ui
     st.session_state.mode = mode_name
@@ -268,7 +268,7 @@ st.caption("por Miguel Ángel Gómez Ortiz")
 with st.sidebar:
     st.subheader("Configuración")
     up = st.file_uploader("Sube el DOCX", type=["docx"])
-    num_q = st.number_input("Número de preguntas", 1, 100, 50, step=1)
+    num_q = st.number_input("Número de preguntas", 1, 200, 50, step=1)
     use_seed = st.checkbox("Fijar semilla", value=False)
     seed = st.number_input("Semilla", 0, 10_000_000, 0, step=1, disabled=not use_seed)
     shuffle_opts = st.checkbox("Barajar opciones", value=True)
