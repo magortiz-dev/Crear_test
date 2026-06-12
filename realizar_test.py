@@ -233,7 +233,28 @@ def score(quiz: List[Question], ui: List[QuestionUI]) -> Tuple[int, int, int, Li
             wrong_idx.append(k)
 
     return ok, wrong, unanswered, wrong_idx
+def tribunal_grade(ok: int, wrong: int, total: int) -> float:
+    """
+    Criterio del tribunal:
+    - Acierto: +1
+    - Fallo: -1/3
+    - Sin responder: 0
+    La nota se calcula sobre el total de preguntas del test.
+    """
+    if total == 0:
+        return 0.0
 
+    raw_score = ok - (wrong / 3)
+    grade = (raw_score / total) * 10
+    return grade
+
+
+def format_grade(grade: float) -> str:
+    """
+    Devuelve la nota con coma decimal: 7,40
+    """
+    return f"{grade:.2f}".replace(".", ",")
+    
 def reset_attempt_state():
     st.session_state.i = 0
     st.session_state.done = False
@@ -380,11 +401,14 @@ st.divider()
 
 ok, wrong, unanswered, wrong_idx = score(quiz, ui_items)
 tot = len(quiz)
+grade = tribunal_grade(ok, wrong, tot)
+
 st.write(
     f"Aciertos: **{ok}/{tot}** · "
     f"Fallos (intento): **{wrong}** · "
     f"Sin responder: **{unanswered}** · "
-    f"Fallos (sesión): **{len(st.session_state.session_wrong_map)}**"
+    f"Fallos (sesión): **{len(st.session_state.session_wrong_map)}** · "
+    f"Nota: **{format_grade(grade)}**"
 )
 
 if st.button("🏁 Finalizar", disabled=st.session_state.done):
@@ -395,12 +419,14 @@ if st.session_state.done:
     add_wrongs_to_session(quiz, ui_items)
     ok, wrong, unanswered, wrong_idx = score(quiz, ui_items)
     pct = (ok / tot * 100) if tot else 0.0
+    grade = tribunal_grade(ok, wrong, tot)
 
     st.subheader("Resultados")
     st.write(f"Puntuación: **{ok}/{tot}** ({pct:.1f}%)")
     st.write(f"Fallos (este intento): **{wrong}**")
     st.write(f"Sin responder: **{unanswered}**")
     st.write(f"Fallos acumulados (sesión): **{len(st.session_state.session_wrong_map)}**")
+    st.write(f"Nota: **{format_grade(grade)}**")
 
     seed_val = int(seed) if use_seed else None
     col1, col2, col3 = st.columns(3)
