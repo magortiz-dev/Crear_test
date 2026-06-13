@@ -44,7 +44,7 @@ class QuestionUI:
 # Solución tolerante: "Solución: c", "Solución: c." "Solución: c)"
 R_SOLUTION = re.compile(r"^\s*Soluci[oó]n\s*:\s*([a-dA-D])\s*[\)\.]?\s*$", re.IGNORECASE)
 # Opción etiquetada (a/b/c/d):
-R_OPT_LABELED = re.compile(r"^\s*([a-dA-D])\s*[\)\.]\s*(.+?)\s*$")
+R_OPT_LABELED = re.compile(r"^\s*([a-dA-D])\s*[\)\.]\s*(.*?)\s*$")
 # Numeración de pregunta al inicio (la quitamos del enunciado)
 R_QNUM = re.compile(r"^\s*\d{1,4}\s*[\.\)\-:]\s*")
 # Ruido típico
@@ -107,41 +107,63 @@ def parse_docx_questions(doc_bytes: bytes) -> List[Question]:
         chunk = []
 
         # ---------- 1) Con letras a)/a. ----------
-        labeled: Dict[str, str] = {}
-        current_opt: Optional[str] = None
-        stem_parts: List[str] = []
-        seen_any_option = False
+labeled: Dict[str, str] = {}
+current_opt: Optional[str] = None
+stem_parts: List[str] = []
+seen_any_option = False
 
-        for ln in content:
-            mopt = R_OPT_LABELED.match(ln)
-            if mopt:
-                seen_any_option = True
-                k = mopt.group(1).upper()  # A-D
-                txt = mopt.group(2).strip()
-                labeled[k] = txt
-                current_opt = k
-            else:
-                if seen_any_option and current_opt:
-                    labeled[current_opt] = (labeled[current_opt] + " " + ln).strip()
-                else:
-                    stem_parts.append(ln)
+for ln in content:
+    mopt = R_OPT_LABELED.match(ln)
+
+    if mopt:
+        # Detecta tanto:
+        #   a) En el nivel 2
+        # como:
+        #   a)
+        #   En el nivel 2
+        seen_any_option = True
+        k = mopt.group(1).upper()
+        txt = mopt.group(2).strip()
+
+        # Si la opción aparece por primera vez, la inicializamos aunque txt esté vacío
+        if k not in labeled:
+            labeled[k] = txt
+        else:
+            # Por seguridad, si se repite la misma letra, concatenamos
+            labeled[k] = (labeled[k] + " " + txt).strip()
+
+        current_opt = k
+    else:
+        if seen_any_option and current_opt:
+            # Si ya estamos dentro de opciones, cualquier línea sin a)/b)/c)/d)
+            # se considera continuación de la última opción.
+            labeled[current_opt] = (labeled[current_opt] + " " + ln).strip()
+        else:
+            # Antes de ver la primera opción, todo pertenece al enunciado.
+            stem_parts.append(ln)
 
         if seen_any_option:
-            # Detecta si son 3 (A,B,C) o 4 (A,B,C,D)
-            have_abc = all(labeled.get(k, "").strip() for k in ["A", "B", "C"])
-            have_abcd = have_abc and labeled.get("D", "").strip() != ""
-            nopt = 4 if have_abcd else 3 if have_abc else 0
+    # Limpia opciones vacías/espacios
+    labeled = {k: v.strip() for k, v in labeled.items()}
 
-            if nopt in (3, 4):
-                opts = [labeled.get(k, "").strip() for k in (["A", "B", "C", "D"][:nopt])]
-                text = " ".join(stem_parts).strip()
-                text = R_QNUM.sub("", text).strip()
-                idx = ord(sol_letter.upper()) - ord("A")
-                # valida que la solución exista en el rango real
-                if text and 0 <= idx < nopt:
-                    q_counter += 1
-                    questions.append(Question(str(q_counter), text, opts, idx))
-                    return  # OK: parseado por formato etiquetado
+    have_abc = all(labeled.get(k, "") for k in ["A", "B", "C"])
+    have_abcd = have_abc and bool(labeled.get("D", ""))
+
+    nopt = 4 if have_abcd else 3 if have_abc else 0
+
+    if nopt in (3, 4):
+        option_letters = ["A", "B", "C", "D"][:nopt]
+        opts = [labeled[k] for k in option_letters]
+
+        text = " ".join(stem_parts).strip()
+        text = R_QNUM.sub("", text).strip()
+
+        idx = ord(sol_letter.upper()) - ord("A")
+
+        if text and 0 <= idx < nopt:
+            q_counter += 1
+            questions.append(Question(str(q_counter), text, opts, idx))
+            return
 
         # ---------- 2) Sin letras: heurística 4 o 3 últimas líneas ----------
         def try_tail(nopt: int) -> Optional[Question]:
@@ -286,8 +308,8 @@ def restart_normal_exam(bank: List[Question], n: int, seed: Optional[int], shuff
 
 
 # ------------ UI ------------
-st.set_page_config(page_title="Test DOCX (3 o 4 opciones)", page_icon="📝", layout="centered")
-st.title("📝 Test desde DOCX (3 o 4 opciones)")
+st.set_page_config(page_title="Test desde DOCX ", page_icon="📝", layout="centered")
+st.title("📝 Test desde DOCX ")
 st.caption("por Miguel Ángel Gómez Ortiz")
 
 with st.sidebar:
