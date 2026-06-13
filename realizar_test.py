@@ -123,11 +123,11 @@ def parse_docx_questions(doc_bytes: bytes) -> List[Question]:
             mopt = R_OPT_LABELED.match(ln)
 
             if mopt:
-                # Detecta tanto:
-                #   a) En el nivel 2
-                # como:
-                #   a)
-                #   En el nivel 2
+                # Detecta:
+                # a) En el nivel 2
+                # y también:
+                # a)
+                # En el nivel 2
                 seen_any_option = True
                 k = mopt.group(1).upper()
                 txt = mopt.group(2).strip()
@@ -149,7 +149,6 @@ def parse_docx_questions(doc_bytes: bytes) -> List[Question]:
                     stem_parts.append(ln)
 
         if seen_any_option:
-            # Limpia opciones vacías/espacios
             labeled = {k: v.strip() for k, v in labeled.items()}
 
             have_abc = all(labeled.get(k, "") for k in ["A", "B", "C"])
@@ -196,7 +195,6 @@ def parse_docx_questions(doc_bytes: bytes) -> List[Question]:
         cand4 = try_tail(4)
         cand3 = try_tail(3)
 
-        chosen = None
         if cand4 and cand3:
             chosen = cand4 if len(cand4.text) >= len(cand3.text) else cand3
         else:
@@ -223,56 +221,7 @@ def parse_docx_questions(doc_bytes: bytes) -> List[Question]:
         uniq[qkey(q)] = q
 
     return list(uniq.values())
-        # ---------- 2) Sin letras: heurística 4 o 3 últimas líneas ----------
-        def try_tail(nopt: int) -> Optional[Question]:
-            nonlocal q_counter
-            if len(content) < (nopt + 1):  # enunciado + opciones
-                return None
-            opts = [o.strip() for o in content[-nopt:]]
-            stem = content[:-nopt]
-            text = " ".join(stem).strip()
-            text = R_QNUM.sub("", text).strip()
-            if not text:
-                return None
-            if any(not o for o in opts):
-                return None
-            idx = ord(sol_letter.upper()) - ord("A")
-            if not (0 <= idx < nopt):
-                return None
-            return Question("?", text, opts, idx)
-
-        cand4 = try_tail(4)
-        cand3 = try_tail(3)
-
-        chosen = None
-        if cand4 and cand3:
-            # Preferimos la que deje un enunciado más razonable (más largo)
-            # (suele evitar tragarse parte del enunciado como opción)
-            chosen = cand4 if len(cand4.text) >= len(cand3.text) else cand3
-        else:
-            chosen = cand4 or cand3
-
-        if chosen:
-            q_counter += 1
-            chosen.qid = str(q_counter)
-            questions.append(chosen)
-
-    for ln in lines:
-        if not ln:
-            continue
-        m = R_SOLUTION.match(ln)
-        if m:
-            flush(m.group(1))
-        else:
-            chunk.append(ln)
-
-    # Deduplicado por (enunciado+opciones)
-    uniq: Dict[str, Question] = {}
-    for q in questions:
-        uniq[qkey(q)] = q
-    return list(uniq.values())
-
-
+    
 # ------------ Quiz helpers (n opciones) ------------
 def build_quiz(bank: List[Question], n: int, seed: Optional[int], shuffle_options: bool):
     rng = random.Random(seed) if seed is not None else random
