@@ -149,12 +149,12 @@ def parse_docx_questions(doc_bytes: bytes) -> List[Question]:
                     stem_parts.append(ln)
 
         if seen_any_option:
-    labeled = {k: v.strip() for k, v in labeled.items()}
+            labeled = {k: v.strip() for k, v in labeled.items()}
 
-    have_abc = all(labeled.get(k, "") for k in ["A", "B", "C"])
-    have_abcd = have_abc and bool(labeled.get("D", ""))
+            have_abc = all(labeled.get(k, "") for k in ["A", "B", "C"])
+            have_abcd = have_abc and bool(labeled.get("D", ""))
 
-    nopt = 4 if have_abcd else 3 if have_abc else 0
+            nopt = 4 if have_abcd else 3 if have_abc else 0
 
     if nopt in (3, 4):
         option_letters = ["A", "B", "C", "D"][:nopt]
