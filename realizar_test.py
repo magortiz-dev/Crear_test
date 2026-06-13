@@ -1,12 +1,19 @@
-# realizar_test.py
+# realizar_test_corregido.py
 # -----------------------------------------------------------
-# Test desde DOCX con 3 o 4 opciones (A–C / A–D), 1 correcta.
-# - Soporta opciones etiquetadas: a) / a. ... (recomendado)
-# - Soporta sin letras: toma las últimas 3 o 4 líneas como opciones (heurística)
-# - Solución: a/b/c/d (también admite "Solución: c." o "Solución: c)")
-# - Radio sin selección inicial (index=None)
-# - Fallos (intento) = SOLO respondidas mal (no incluye sin responder)
-# - Repaso fallos: intento y sesión
+# Test desde DOCX con 3 o 4 opciones (A-C / A-D), 1 correcta.
+#
+# Mejoras principales:
+# - Detecta opciones escritas como texto: a) / a. / b) / b. ...
+# - Detecta listas automáticas de Word aunque python-docx no muestre "a)"/"b)" en el texto.
+#   En esos casos usa el nivel de numeración interno del DOCX:
+#     nivel 0 = enunciado
+#     nivel 1 = opciones
+# - Soporta 3 o 4 opciones.
+# - Solución: a/b/c/d, también con punto/paréntesis final.
+# - Radio sin selección inicial.
+# - Fallos (intento) = solo respondidas mal, no incluye sin responder.
+# - Nota tribunal: acierto +1, fallo -1/3, blanco 0, sobre total de preguntas.
+# - Repaso de fallos del intento y fallos acumulados de la sesión.
 # -----------------------------------------------------------
 
 import io
@@ -24,6 +31,7 @@ except Exception as e:
     docx = None
     DOCX_IMPORT_ERR = e
 
+
 # ------------ Modelos ------------
 @dataclass
 class Question:
@@ -31,6 +39,7 @@ class Question:
     text: str
     options: List[str]   # longitud 3 o 4
     correct: int         # índice 0..len(options)-1
+
 
 @dataclass
 class QuestionUI:
@@ -40,20 +49,25 @@ class QuestionUI:
     revealed: bool = False
 
 
+@dataclass
+class ParaItem:
+    text: str
+    ilvl: Optional[int] = None
+    numid: Optional[int] = None
+
+
 # ------------ Regex / limpieza ------------
-# Solución tolerante: "Solución: c", "Solución: c." "Solución: c)"
 R_SOLUTION = re.compile(r"^\s*Soluci[oó]n\s*:\s*([a-dA-D])\s*[\)\.]?\s*$", re.IGNORECASE)
-# Opción etiquetada (a/b/c/d):
 R_OPT_LABELED = re.compile(r"^\s*([a-dA-D])\s*[\)\.]\s*(.*?)\s*$")
-# Numeración de pregunta al inicio (la quitamos del enunciado)
 R_QNUM = re.compile(r"^\s*\d{1,4}\s*[\.\)\-:]\s*")
-# Ruido típico
 R_NOISE = re.compile(r"^\s*C2\s*[\-–]\s*Uso\s*Restringido\s*$", re.IGNORECASE)
+
 
 def clean_line(s: str) -> str:
     s = (s or "").replace("\xa0", " ").strip()
     s = re.sub(r"\s+", " ", s).strip()
     return s
+
 
 def is_noise(s: str) -> bool:
     if not s:
@@ -64,165 +78,203 @@ def is_noise(s: str) -> bool:
         return True
     return False
 
+
 def qkey_from_text(text: str, options: List[str]) -> str:
     base = re.sub(r"\s+", " ", text.strip().lower())
     opts = "||".join(re.sub(r"\s+", " ", o.strip().lower()) for o in options)
     return hashlib.sha1((base + "##" + opts).encode("utf-8")).hexdigest()
 
+
 def qkey(q: Question) -> str:
     return qkey_from_text(q.text, q.options)
 
 
-# ------------ Parser DOCX (3 o 4 opciones) ------------
+def get_paragraph_numbering(paragraph) -> Tuple[Optional[int], Optional[int]]:
+    """
+    Devuelve (ilvl, numid) si el párrafo pertenece a una lista numerada de Word.
+    Esto es clave porque Word puede mostrar a)/b)/c)/d) visualmente, pero
+    python-docx devuelve solo el texto de la opción sin la letra.
+    """
+    ppr = paragraph._p.pPr
+    if ppr is None or ppr.numPr is None:
+        return None, None
+
+    ilvl = None
+    numid = None
+    if ppr.numPr.ilvl is not None:
+        try:
+            ilvl = int(ppr.numPr.ilvl.val)
+        except Exception:
+            ilvl = None
+    if ppr.numPr.numId is not None:
+        try:
+            numid = int(ppr.numPr.numId.val)
+        except Exception:
+            numid = None
+    return ilvl, numid
+
+
+# ------------ Parser DOCX ------------
 def parse_docx_questions(doc_bytes: bytes) -> List[Question]:
     """
     Cierra bloques por 'Solución: x'.
-    En cada bloque intenta:
-      1) Formato con letras:
-         a) texto
-         o
-         a)
-         texto
-      2) Formato sin letras: últimas 3 o 4 líneas como opciones.
+
+    Dentro de cada bloque intenta, en este orden:
+      1) Opciones escritas explícitamente como a), b), c), d) o a., b., c., d.
+      2) Opciones como lista automática de Word (nivel de numeración interno ilvl=1).
+      3) Fallback sin letras: últimas 3 o 4 líneas como opciones.
     """
     if docx is None:
         raise RuntimeError(f"Falta python-docx. Error importando: {DOCX_IMPORT_ERR}")
 
     d = docx.Document(io.BytesIO(doc_bytes))
-    raw_lines = [clean_line(p.text) for p in d.paragraphs]
 
-    lines: List[str] = []
-    for ln in raw_lines:
-        if is_noise(ln):
+    items: List[ParaItem] = []
+    for p in d.paragraphs:
+        txt = clean_line(p.text)
+        if is_noise(txt):
             continue
-        if ln == "":
-            if lines and lines[-1] == "":
-                continue
-        lines.append(ln)
+        ilvl, numid = get_paragraph_numbering(p)
+        # Guardamos también vacíos para separación visual, aunque luego no se usen en content.
+        items.append(ParaItem(text=txt, ilvl=ilvl, numid=numid))
 
     questions: List[Question] = []
-    chunk: List[str] = []
+    chunk: List[ParaItem] = []
     q_counter = 0
 
+    def build_question(text: str, opts: List[str], sol_letter: str) -> Optional[Question]:
+        nonlocal q_counter
+        text = clean_line(R_QNUM.sub("", text).strip())
+        opts = [clean_line(o) for o in opts if clean_line(o)]
+        if len(opts) not in (3, 4):
+            return None
+        if not text:
+            return None
+        idx = ord(sol_letter.upper()) - ord("A")
+        if not (0 <= idx < len(opts)):
+            return None
+        q_counter += 1
+        return Question(str(q_counter), text, opts, idx)
+
     def flush(sol_letter: str):
-        nonlocal q_counter, chunk, questions
+        nonlocal chunk, questions
 
-        content = [x for x in chunk if x.strip()]
+        content_items = [it for it in chunk if it.text.strip()]
         chunk = []
-
-        if len(content) < 4:
+        if len(content_items) < 4:
             return
 
-        # ---------- 1) Con letras a)/a. ----------
+        content_text = [it.text for it in content_items]
+
+        # ---------- 1) Opciones con letras escritas: a) / a. ----------
         labeled: Dict[str, str] = {}
         current_opt: Optional[str] = None
         stem_parts: List[str] = []
         seen_any_option = False
 
-        for ln in content:
+        for it in content_items:
+            ln = it.text
             mopt = R_OPT_LABELED.match(ln)
 
             if mopt:
-                # Detecta:
-                # a) En el nivel 2
-                # y también:
-                # a)
-                # En el nivel 2
                 seen_any_option = True
-                k = mopt.group(1).upper()
-                txt = mopt.group(2).strip()
-
-                if k not in labeled:
-                    labeled[k] = txt
+                letter = mopt.group(1).upper()
+                opt_text = clean_line(mopt.group(2))
+                if letter not in labeled:
+                    labeled[letter] = opt_text
                 else:
-                    labeled[k] = (labeled[k] + " " + txt).strip()
-
-                current_opt = k
-
+                    labeled[letter] = clean_line(labeled[letter] + " " + opt_text)
+                current_opt = letter
             else:
                 if seen_any_option and current_opt:
-                    # Si ya estamos dentro de opciones, cualquier línea sin a)/b)/c)/d)
-                    # se considera continuación de la última opción.
-                    labeled[current_opt] = (labeled[current_opt] + " " + ln).strip()
+                    labeled[current_opt] = clean_line(labeled[current_opt] + " " + ln)
                 else:
-                    # Antes de ver la primera opción, todo pertenece al enunciado.
                     stem_parts.append(ln)
 
         if seen_any_option:
-            labeled = {k: v.strip() for k, v in labeled.items()}
-
+            labeled = {k: clean_line(v) for k, v in labeled.items()}
             have_abc = all(labeled.get(k, "") for k in ["A", "B", "C"])
             have_abcd = have_abc and bool(labeled.get("D", ""))
-
             nopt = 4 if have_abcd else 3 if have_abc else 0
-
             if nopt in (3, 4):
-                option_letters = ["A", "B", "C", "D"][:nopt]
-                opts = [labeled[k] for k in option_letters]
-
-                text = " ".join(stem_parts).strip()
-                text = R_QNUM.sub("", text).strip()
-
-                idx = ord(sol_letter.upper()) - ord("A")
-
-                if text and 0 <= idx < nopt:
-                    q_counter += 1
-                    questions.append(Question(str(q_counter), text, opts, idx))
+                opts = [labeled[k] for k in ["A", "B", "C", "D"][:nopt]]
+                text = " ".join(stem_parts)
+                q = build_question(text, opts, sol_letter)
+                if q:
+                    questions.append(q)
                     return
-        
-        # ---------- 2) Sin letras: heurística 4 o 3 últimas líneas ----------
+
+        # ---------- 2) Opciones como lista automática de Word ----------
+        # En tus DOCX, el enunciado suele ser ilvl=0 y las opciones ilvl=1.
+        # python-docx no muestra la letra "a)" si es numeración automática, por eso usamos ilvl.
+        option_items: List[ParaItem] = []
+        stem_items: List[ParaItem] = []
+        seen_options_by_level = False
+
+        for it in content_items:
+            if it.ilvl is not None and it.ilvl >= 1:
+                seen_options_by_level = True
+                option_items.append(it)
+            else:
+                if seen_options_by_level and option_items:
+                    # Continuación de la última opción si aparece un párrafo sin numeración dentro de opciones.
+                    option_items[-1].text = clean_line(option_items[-1].text + " " + it.text)
+                else:
+                    stem_items.append(it)
+
+        if 3 <= len(option_items) <= 4:
+            opts = [it.text for it in option_items]
+            text = " ".join(it.text for it in stem_items)
+            q = build_question(text, opts, sol_letter)
+            if q:
+                questions.append(q)
+                return
+
+        # ---------- 3) Fallback sin letras: últimas 4 o 3 líneas ----------
         def try_tail(nopt: int) -> Optional[Question]:
-            if len(content) < (nopt + 1):
+            if len(content_text) < (nopt + 1):
                 return None
+            opts = content_text[-nopt:]
+            stem = content_text[:-nopt]
+            text = " ".join(stem)
+            return build_question(text, opts, sol_letter)
 
-            opts = [o.strip() for o in content[-nopt:]]
-            stem = content[:-nopt]
-
-            text = " ".join(stem).strip()
-            text = R_QNUM.sub("", text).strip()
-
-            if not text:
-                return None
-            if any(not o for o in opts):
-                return None
-
-            idx = ord(sol_letter.upper()) - ord("A")
-            if not (0 <= idx < nopt):
-                return None
-
-            return Question("?", text, opts, idx)
-
+        sol_idx = ord(sol_letter.upper()) - ord("A")
         cand4 = try_tail(4)
         cand3 = try_tail(3)
 
-        if cand4 and cand3:
-            chosen = cand4 if len(cand4.text) >= len(cand3.text) else cand3
+        # Regla importante:
+        # - Si hay D como solución, debe haber 4 opciones.
+        # - Si hay 5 o más líneas y ambas opciones son posibles, preferimos 4.
+        #   Esto evita meter la opción A dentro del enunciado.
+        chosen = None
+        if sol_idx == 3:
+            chosen = cand4
+        elif cand4:
+            chosen = cand4
         else:
-            chosen = cand4 or cand3
+            chosen = cand3
 
         if chosen:
-            q_counter += 1
-            chosen.qid = str(q_counter)
             questions.append(chosen)
 
-    for ln in lines:
-        if not ln:
+    for it in items:
+        if not it.text:
             continue
-
-        m = R_SOLUTION.match(ln)
+        m = R_SOLUTION.match(it.text)
         if m:
             flush(m.group(1))
         else:
-            chunk.append(ln)
+            chunk.append(it)
 
     # Deduplicado por enunciado + opciones
     uniq: Dict[str, Question] = {}
     for q in questions:
         uniq[qkey(q)] = q
-
     return list(uniq.values())
-    
-# ------------ Quiz helpers (n opciones) ------------
+
+
+# ------------ Quiz helpers ------------
 def build_quiz(bank: List[Question], n: int, seed: Optional[int], shuffle_options: bool):
     rng = random.Random(seed) if seed is not None else random
     sample = rng.sample(bank, k=min(n, len(bank), 100))
@@ -239,6 +291,7 @@ def build_quiz(bank: List[Question], n: int, seed: Optional[int], shuffle_option
         else:
             ui_items.append(QuestionUI(options=list(q.options), correct=q.correct))
     return sample, ui_items
+
 
 def score(quiz: List[Question], ui: List[QuestionUI]) -> Tuple[int, int, int, List[int]]:
     """
@@ -262,6 +315,8 @@ def score(quiz: List[Question], ui: List[QuestionUI]) -> Tuple[int, int, int, Li
             wrong_idx.append(k)
 
     return ok, wrong, unanswered, wrong_idx
+
+
 def tribunal_grade(ok: int, wrong: int, total: int) -> float:
     """
     Criterio del tribunal:
@@ -272,26 +327,25 @@ def tribunal_grade(ok: int, wrong: int, total: int) -> float:
     """
     if total == 0:
         return 0.0
-
     raw_score = ok - (wrong / 3)
     grade = (raw_score / total) * 10
     return grade
 
 
 def format_grade(grade: float) -> str:
-    """
-    Devuelve la nota con coma decimal: 7,40
-    """
     return f"{grade:.2f}".replace(".", ",")
-    
+
+
 def reset_attempt_state():
     st.session_state.i = 0
     st.session_state.done = False
+
 
 def add_wrongs_to_session(quiz: List[Question], ui: List[QuestionUI]):
     _, _, _, wrong_idx = score(quiz, ui)
     for k in wrong_idx:
         st.session_state.session_wrong_map[qkey(quiz[k])] = quiz[k]
+
 
 def start_review_from_questions(questions: List[Question], mode_name: str,
                                 n: int, seed: Optional[int], shuffle_opts: bool):
@@ -305,6 +359,7 @@ def start_review_from_questions(questions: List[Question], mode_name: str,
     reset_attempt_state()
     st.rerun()
 
+
 def restart_normal_exam(bank: List[Question], n: int, seed: Optional[int], shuffle_opts: bool):
     new_quiz, new_ui = build_quiz(bank, n, seed, shuffle_opts)
     st.session_state.quiz = new_quiz
@@ -315,8 +370,8 @@ def restart_normal_exam(bank: List[Question], n: int, seed: Optional[int], shuff
 
 
 # ------------ UI ------------
-st.set_page_config(page_title="Test desde DOCX ", page_icon="📝", layout="centered")
-st.title("📝 Test desde DOCX ")
+st.set_page_config(page_title="Test desde DOCX", page_icon="📝", layout="centered")
+st.title("📝 Test desde DOCX")
 st.caption("por Miguel Ángel Gómez Ortiz")
 
 with st.sidebar:
