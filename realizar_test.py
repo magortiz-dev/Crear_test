@@ -156,19 +156,19 @@ def parse_docx_questions(doc_bytes: bytes) -> List[Question]:
 
             nopt = 4 if have_abcd else 3 if have_abc else 0
 
-    if nopt in (3, 4):
-        option_letters = ["A", "B", "C", "D"][:nopt]
-        opts = [labeled[k] for k in option_letters]
+            if nopt in (3, 4):
+                option_letters = ["A", "B", "C", "D"][:nopt]
+                opts = [labeled[k] for k in option_letters]
 
-        text = " ".join(stem_parts).strip()
-        text = R_QNUM.sub("", text).strip()
+                text = " ".join(stem_parts).strip()
+                text = R_QNUM.sub("", text).strip()
 
-        idx = ord(sol_letter.upper()) - ord("A")
+                idx = ord(sol_letter.upper()) - ord("A")
 
-        if text and 0 <= idx < nopt:
-            q_counter += 1
-            questions.append(Question(str(q_counter), text, opts, idx))
-            return
+                if text and 0 <= idx < nopt:
+                    q_counter += 1
+                    questions.append(Question(str(q_counter), text, opts, idx))
+                    return
         
         # ---------- 2) Sin letras: heurística 4 o 3 últimas líneas ----------
         def try_tail(nopt: int) -> Optional[Question]:
